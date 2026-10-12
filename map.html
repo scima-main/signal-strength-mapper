@@ -139,25 +139,38 @@ function ramp(t){
 }
 const css = c => `rgb(${c[0]},${c[1]},${c[2]})`;
 
-/* ------------------------------------------------------------------- init */
-if (!window.L){
-  $("noleaflet").style.display = "grid";
-} else {
-  map = L.map("map", { preferCanvas: true, zoomSnap: .5 }).setView([0,0], 2);
-  canvasR = L.canvas({ padding: .5 });
-  const bases = {
-    "Carto dark":     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_4fnh_1_4709a3f588c8f186a4e35d57",
-                        { maxZoom: 20, attribution: "© OpenStreetMap contributors © CARTO" }),
-    "Carto light":    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=cb1_4fnh_1_4709a3f588c8f186a4e35d57",
-                        { maxZoom: 20, attribution: "© OpenStreetMap contributors © CARTO" }),
-  };
-  bases["Carto dark"].addTo(map);
-  L.control.layers(bases, null, { position: "topleft", collapsed: true }).addTo(map);
-  map.on("zoomend", () => { if (S.zscale) restyle(); else status(); });
-  map.on("moveend", status);
-  fetch("field.geojson").then(r => { if (!r.ok) throw 0; return r.json(); })
-    .then(setData).catch(() => status("no ./field.geojson — drop or pick a file"));
+async function loadConfig() {
+  try {
+    const res = await fetch('./config.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    console.warn('config.json missing or invalid, tiles may fail:', e);
+    return { cartoKey: '' }; // graceful fallback
+  }
 }
+
+(async () => {
+  const cfg = await loadConfig();
+  
+  if (!window.L) {
+    $('noleaflet').style.display = 'grid';
+    return;
+  }
+  
+  map = L.map('map', { preferCanvas: true, zoomSnap: .5 }).setView([0, 0], 2);
+  canvasR = L.canvas({ padding: .5 });
+  
+  const bases = {
+    'Carto dark': L.tileLayer(
+      `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${encodeURIComponent(cfg.cartoKey)}`,
+      { maxZoom: 20, attribution: '© OpenStreetMap contributors © CARTO' }
+    ),
+    'Carto light': L.tileLayer(
+      `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${encodeURIComponent(cfg.cartoKey)}`,
+      { maxZoom: 20, attribution: '© OpenStreetMap contributors © CARTO' }
+    ),
+  };
 
 /* --------------------------------------------------------------- loading */
 function setData(gj){
