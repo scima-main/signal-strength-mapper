@@ -1,0 +1,357 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>signal field · OSM overlay</title>
+<!-- Leaflet + OSM tiles are the only external resources; everything else is inline.
+     Served over http(s) the page auto-loads ./field.geojson; otherwise drop a file in. -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin:0; height:100%; font:13px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #map { position:absolute; inset:0; background:#0b1020; }
+  #panel {
+    position:absolute; top:10px; right:10px; z-index:1000; width:268px;
+    background:rgba(16,20,34,.92); color:#dfe6f5; border:1px solid #2c3554;
+    border-radius:10px; padding:10px 12px 12px; max-height:calc(100% - 24px);
+    overflow:auto; box-shadow:0 6px 24px rgba(0,0,0,.45); backdrop-filter:blur(4px);
+  }
+  #panel h1 { font-size:13px; margin:0 0 8px; letter-spacing:.06em; color:#9fb4ff;
+              display:flex; justify-content:space-between; align-items:center; }
+  #panel h1 button { background:none; border:0; color:#9fb4ff; font:inherit; cursor:pointer; }
+  #panel.collapsed .body { display:none; }
+  .row { margin:7px 0; }
+  .row label { display:flex; justify-content:space-between; gap:8px; color:#aab6d6; }
+  .row label b { color:#eef2ff; font-weight:600; }
+  input[type=range] { width:100%; accent-color:#6f8cff; height:18px; }
+  select, input[type=file] { width:100%; background:#141a2e; color:#dfe6f5;
+    border:1px solid #2c3554; border-radius:6px; padding:3px 5px; font:inherit; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .chk { display:flex; gap:6px; align-items:center; color:#aab6d6; }
+  hr { border:0; border-top:1px solid #26304d; margin:9px 0; }
+  #legend { margin-top:8px; }
+  #legend canvas { width:100%; height:12px; border-radius:3px; display:block; }
+  #legend .ticks { display:flex; justify-content:space-between; color:#8d99bb; font-size:11px; }
+  #status { position:absolute; left:10px; bottom:10px; z-index:1000; color:#c8d2ea;
+    background:rgba(16,20,34,.85); border:1px solid #2c3554; border-radius:8px;
+    padding:4px 9px; font-size:12px; }
+  #drop { position:absolute; inset:0; z-index:2000; display:none; place-items:center;
+    background:rgba(10,14,30,.72); color:#9fb4ff; font-size:18px; letter-spacing:.05em; }
+  #drop.on { display:grid; }
+  #noleaflet { position:absolute; inset:0; display:none; place-items:center; text-align:center;
+    color:#c8d2ea; padding:20px; }
+  .muted { color:#7d89ac; font-size:11px; }
+  .leaflet-popup-content { font:12px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  .leaflet-popup-content table { border-collapse:collapse; }
+  .leaflet-popup-content td { padding:1px 7px 1px 0; color:#444; }
+  .leaflet-popup-content td+td { color:#111; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="panel">
+  <h1>SIGNAL FIELD <button id="fold" title="collapse">–</button></h1>
+  <div class="body">
+    <div class="row">
+      <input type="file" id="file" accept=".geojson,.json,application/geo+json,application/json">
+      <div class="muted">or drop a .geojson anywhere · auto-loads ./field.geojson when served over http</div>
+    </div>
+    <hr>
+    <div class="row"><label>colour / filter by <b id="cbName"></b></label>
+      <select id="colorBy"></select></div>
+    <div class="row grid2">
+      <div><label>ramp min <b id="loV"></b></label><input type="range" id="lo" step="any"></div>
+      <div><label>ramp max <b id="hiV"></b></label><input type="range" id="hi" step="any"></div>
+    </div>
+    <div class="row grid2">
+      <div class="chk"><input type="checkbox" id="auto" checked><label for="auto">auto range</label></div>
+      <div class="chk"><input type="checkbox" id="invert"><label for="invert">invert ramp</label></div>
+    </div>
+    <hr>
+    <div class="row"><label>fill opacity <b id="fillV"></b></label>
+      <input type="range" id="fill" min="0" max="1" step="0.01" value="0.75"></div>
+    <div class="row"><label>opacity scaled by</label>
+      <select id="opBy">
+        <option value="const">constant</option>
+        <option value="value" selected>value (low → transparent)</option>
+        <option value="ess">confidence (ess)</option>
+        <option value="sd">certainty (1 / sd)</option>
+      </select></div>
+    <div class="row"><label>opacity reference <b id="refV"></b></label>
+      <input type="range" id="ref" min="0.1" max="20" step="0.1" value="3">
+      <div class="muted">ess or sd that counts as “full opacity”</div></div>
+    <div class="row grid2">
+      <div class="chk"><input type="checkbox" id="stroke"><label for="stroke">outline</label></div>
+      <div><label>outline α <b id="sopV"></b></label><input type="range" id="sop" min="0" max="1" step="0.05" value="0.5"></div>
+    </div>
+    <hr>
+    <div class="row grid2">
+      <div><label>show ≥ <b id="floV"></b></label><input type="range" id="flo" step="any"></div>
+      <div><label>show ≤ <b id="fhiV"></b></label><input type="range" id="fhi" step="any"></div>
+    </div>
+    <div class="row"><label>min ess <b id="messV"></b></label>
+      <input type="range" id="mess" min="0" max="10" step="0.1" value="0"></div>
+    <div class="row" style="display:flex;gap:10px;flex-wrap:wrap">
+      <div class="chk"><input type="checkbox" id="hideEx"><label for="hideEx">hide extrapolated</label></div>
+      <div class="chk"><input type="checkbox" id="shownull"><label for="shownull">null cells (grey)</label></div>
+      <div class="chk"><input type="checkbox" id="zscale"><label for="zscale">dots scale w/ zoom</label></div>
+    </div>
+    <div class="row"><label>dot radius <b id="pxV"></b> px</label>
+      <input type="range" id="px" min="1" max="24" step="1" value="7"></div>
+    <div id="legend"><canvas id="ramp" width="240" height="12"></canvas>
+      <div class="ticks"><span id="legLo"></span><span id="legHi"></span></div></div>
+  </div>
+</div>
+
+<div id="status">loading…</div>
+<div id="drop">drop the .geojson to overlay it</div>
+<div id="noleaflet"><div><b>Leaflet could not load.</b><br>This viewer is offline — download
+  <code>map.html</code> and open it in a browser (or serve the folder with
+  <code>python3 -m http.server</code>); tiles and the CDN script need network access.</div></div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ state */
+const $ = id => document.getElementById(id);
+const S = {
+  colorBy: null, opBy: "value", fill: 0.75, stroke: false, strokeOp: 0.5,
+  lo: null, hi: null, auto: true, invert: false,
+  fLo: null, fHi: null, minEss: 0, hideEx: false,
+  px: 7, zscale: false, cellM: 20, ref: 3, showNull: false,
+};
+let map, layer = null, feats = [], meta = {}, numKeys = [], canvasR = null;
+
+/* --------------------------------------------------------------- colormap */
+const STOPS = [[0,[30,60,180]],[.25,[0,170,220]],[.5,[40,200,110]],[.75,[240,210,60]],[1,[215,60,45]]];
+function ramp(t){
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < STOPS.length; i++){
+    if (t <= STOPS[i][0]){
+      const [t0,c0] = STOPS[i-1], [t1,c1] = STOPS[i], f = t1 === t0 ? 0 : (t - t0)/(t1 - t0);
+      return c0.map((c,k) => Math.round(c + (c1[k]-c)*f));
+    }
+  }
+  return STOPS[STOPS.length-1][1];
+}
+const css = c => `rgb(${c[0]},${c[1]},${c[2]})`;
+
+/* ------------------------------------------------------------------- init */
+if (!window.L){
+  $("noleaflet").style.display = "grid";
+} else {
+  map = L.map("map", { preferCanvas: true, zoomSnap: .5 }).setView([0,0], 2);
+  canvasR = L.canvas({ padding: .5 });
+  const bases = {
+    "Carto dark":     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_4fnh_1_4709a3f588c8f186a4e35d57",
+                        { maxZoom: 20, attribution: "© OpenStreetMap contributors © CARTO" }),
+    "Carto light":    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=cb1_4fnh_1_4709a3f588c8f186a4e35d57",
+                        { maxZoom: 20, attribution: "© OpenStreetMap contributors © CARTO" }),
+  };
+  bases["Carto dark"].addTo(map);
+  L.control.layers(bases, null, { position: "topleft", collapsed: true }).addTo(map);
+  map.on("zoomend", () => { if (S.zscale) restyle(); else status(); });
+  map.on("moveend", status);
+  fetch("field.geojson").then(r => { if (!r.ok) throw 0; return r.json(); })
+    .then(setData).catch(() => status("no ./field.geojson — drop or pick a file"));
+}
+
+/* --------------------------------------------------------------- loading */
+function setData(gj){
+  const list = (gj.features || []).filter(f =>
+    f.geometry && f.geometry.type === "Point" && f.properties);
+  if (!list.length){ status("no point features found"); return; }
+  feats = list.map(f => ({ ll: [f.geometry.coordinates[1], f.geometry.coordinates[0]], p: f.properties }));
+  meta = gj.properties || {};
+
+  // union over *all* features: the first one may be an all-null cell, and a
+  // key that is null there can still be the channel everywhere else
+  const seen = new Set();
+  for (const f of feats)
+    for (const k in f.p)
+      if (!seen.has(k) && typeof f.p[k] === "number" && isFinite(f.p[k])) seen.add(k);
+  numKeys = [...seen];
+  const chan = numKeys.find(k => !/(_sd|_ci_|_min|_max|_median|^ess$|^n_eff$|^sigma_m$)/.test(k))
+            || numKeys[0] || null;
+  $("colorBy").innerHTML = numKeys.map(k => `<option${k===chan?" selected":""}>${k}</option>`).join("");
+  S.colorBy = chan;
+  if (!chan){ status("no numeric properties in this file — nothing to colour"); }
+
+  // cell size: distance between the first two features sharing a latitude
+  S.cellM = 20;
+  const a = feats[0];
+  const b = feats.find(f => f.ll[0] === a.ll[0] && f !== a);
+  if (b) S.cellM = Math.abs(b.ll[1] - a.ll[1]) * 111319.49 * Math.cos(a.ll[0] * Math.PI/180);
+
+  syncRange();
+  rebuild();
+  map.fitBounds(L.latLngBounds(feats.map(f => f.ll)).pad(.06));
+  status();
+}
+function readText(txt){ try { setData(JSON.parse(txt)); } catch(e){ status("bad JSON: " + e.message); } }
+$("file").addEventListener("change", e => {
+  const f = e.target.files[0]; if (f) f.text().then(readText);
+});
+addEventListener("dragover", e => { e.preventDefault(); $("drop").classList.add("on"); });
+addEventListener("dragleave", e => { if (!e.relatedTarget) $("drop").classList.remove("on"); });
+addEventListener("drop", e => {
+  e.preventDefault(); $("drop").classList.remove("on");
+  const f = e.dataTransfer.files[0]; if (f) f.text().then(readText);
+});
+
+/* --------------------------------------------------------------- ranges */
+function extent(key){
+  let lo = Infinity, hi = -Infinity;
+  for (const f of feats){ const v = f.p[key]; if (v == null || !isFinite(v)) continue;
+    if (v < lo) lo = v; if (v > hi) hi = v; }
+  return isFinite(lo) ? [lo, hi] : [0, 1];
+}
+function syncRange(){
+  const [lo, hi] = extent(S.colorBy);
+  for (const [id, v] of [["lo", lo], ["hi", hi], ["flo", lo], ["fhi", hi]]){
+    const el = $(id); el.min = lo; el.max = hi; el.step = (hi - lo)/400 || 1;
+    el.value = v;
+  }
+  S.lo = lo; S.hi = hi; S.fLo = lo; S.fHi = hi;
+  if (numKeys.includes("ess")){
+    $("mess").max = Math.max(1, Math.ceil(extent("ess")[1]));
+  }
+  drawLegend();
+  labels();
+}
+function labels(){
+  const f = v => Math.abs(v) >= 1000 ? v.toFixed(0) : (+v).toFixed(Math.abs(v) < 10 ? 2 : 1);
+  $("loV").textContent = f(S.lo);  $("hiV").textContent = f(S.hi);
+  $("floV").textContent = f(S.fLo); $("fhiV").textContent = f(S.fHi);
+  $("fillV").textContent = S.fill.toFixed(2);
+  $("sopV").textContent = S.strokeOp.toFixed(2);
+  $("messV").textContent = S.minEss.toFixed(1);
+  $("pxV").textContent = S.px;
+  $("refV").textContent = S.ref.toFixed(1);
+  $("cbName").textContent = S.colorBy || "";
+  $("legLo").textContent = f(S.lo); $("legHi").textContent = f(S.hi);
+}
+function drawLegend(){
+  const cv = $("ramp"), g = cv.getContext("2d");
+  for (let x = 0; x < cv.width; x++){
+    let t = x/(cv.width-1); if (S.invert) t = 1-t;
+    g.fillStyle = css(ramp(t)); g.fillRect(x, 0, 1, cv.height);
+  }
+}
+
+/* -------------------------------------------------------------- filtering */
+function pass(f){
+  const p = f.p, v = p[S.colorBy];
+  if (v == null || !isFinite(v)) return S.showNull;
+  if (v < S.fLo || v > S.fHi) return false;
+  if (typeof p.ess === "number" && p.ess < S.minEss) return false;
+  if (S.hideEx && p.extrapolated) return false;
+  return true;
+}
+
+/* ---------------------------------------------------------------- styling */
+function valueT(v){
+  const span = (S.hi - S.lo) || 1;
+  let t = (v - S.lo)/span;
+  t = Math.max(0, Math.min(1, t));
+  return S.invert ? 1-t : t;
+}
+function alphaFor(p){
+  let k = 1;
+  if (S.opBy === "value"){
+    const v = p[S.colorBy];
+    k = v == null ? 0 : valueT(v);
+  } else if (S.opBy === "ess"){
+    // files without ess (plain channel-only exports) fall back to constant
+    k = p.ess == null ? 1 : Math.min(1, p.ess/S.ref);
+  } else if (S.opBy === "sd"){
+    const sd = p[S.colorBy + "_sd"];
+    k = sd == null ? 1 : Math.max(0, 1 - sd/S.ref/2);
+  }
+  return S.fill * k;
+}
+function styleFor(p){
+  const v = p[S.colorBy];
+  const nullish = v == null || !isFinite(v);
+  return {
+    renderer: canvasR,
+    radius: radiusPx(),
+    fillColor: nullish ? "#9aa3b8" : css(ramp(valueT(v))),
+    fillOpacity: nullish ? S.fill * 0.25 : alphaFor(p),
+    stroke: S.stroke,
+    weight: 1,
+    color: "#0b1020",
+    opacity: S.stroke ? S.strokeOp : 0,
+  };
+}
+function radiusPx(){
+  if (!S.zscale || !map) return S.px;
+  const c = map.getCenter();
+  const p0 = map.latLngToContainerPoint(c);
+  const p1 = map.latLngToContainerPoint([c.lat + S.cellM/111319.49, c.lng]);
+  return Math.max(1.5, Math.abs(p0.y - p1.y)/2);
+}
+
+/* ---------------------------------------------------------------- rebuild */
+function rebuild(){
+  if (!map) return;
+  if (layer){ map.removeLayer(layer); layer = null; }
+  const keep = feats.filter(pass);
+  layer = L.layerGroup(keep.map(f => {
+    const m = L.circleMarker(f.ll, styleFor(f.p));
+    m._sf = f.p;                       // restyle() needs the props back
+    m.on("click", () => popup(f));
+    return m;
+  })).addTo(map);
+  status();
+}
+function restyle(){
+  if (!layer) return;
+  layer.eachLayer(m => m.setStyle(styleFor(m._sf || {})));
+  status();
+}
+function popup(f){
+  const rows = Object.entries(f.p).map(([k,v]) =>
+    `<tr><td>${k}</td><td>${v === null ? "null" : (typeof v === "number" ? (+v).toFixed(3).replace(/\.?0+$/,"") : v)}</td></tr>`).join("");
+  L.popup({ maxWidth: 300 })
+    .setLatLng(f.ll)
+    .setContent(`<table>${rows}<tr><td>lon,lat</td><td>${f.ll[1].toFixed(6)}, ${f.ll[0].toFixed(6)}</td></tr></table>`)
+    .openOn(map);
+}
+function status(extra){
+  const n = layer ? layer.getLayers().length : 0;
+  $("status").textContent = extra ||
+    `${feats.length.toLocaleString()} pts · ${n.toLocaleString()} shown · ${S.colorBy || "—"} · zoom ${map ? map.getZoom() : "-"}` +
+    (meta && meta.grid ? ` · cell ${meta.grid.cell_size_m} m` : "");
+}
+
+/* ----------------------------------------------------------------- wires */
+function on(id, ev, fn){ $(id).addEventListener(ev, fn); }
+on("fold", "click", () => {
+  const p = $("panel").classList.toggle("collapsed");
+  $("fold").textContent = p ? "+" : "–";
+});
+on("colorBy", "change", e => { S.colorBy = e.target.value; syncRange(); rebuild(); });
+on("lo",  "input", e => { S.auto = false; $("auto").checked = false; S.lo = +e.target.value; labels(); drawLegend(); restyle(); });
+on("hi",  "input", e => { S.auto = false; $("auto").checked = false; S.hi = +e.target.value; labels(); drawLegend(); restyle(); });
+on("auto","change", e => { S.auto = e.target.checked; if (S.auto){ const [lo,hi] = extent(S.colorBy);
+    S.lo = lo; S.hi = hi; $("lo").value = lo; $("hi").value = hi; } labels(); drawLegend(); restyle(); });
+on("invert","change", e => { S.invert = e.target.checked; drawLegend(); restyle(); });
+on("fill","input", e => { S.fill = +e.target.value; labels(); restyle(); });
+on("opBy","change", e => { S.opBy = e.target.value; restyle(); });
+on("ref", "input", e => { S.ref = +e.target.value; labels(); restyle(); });
+on("stroke","change", e => { S.stroke = e.target.checked; restyle(); });
+on("sop", "input", e => { S.strokeOp = +e.target.value; labels(); restyle(); });
+on("flo", "input", e => { S.fLo = Math.min(+e.target.value, S.fHi); labels(); rebuild(); });
+on("fhi", "input", e => { S.fHi = Math.max(+e.target.value, S.fLo); labels(); rebuild(); });
+on("mess","input", e => { S.minEss = +e.target.value; labels(); rebuild(); });
+on("hideEx","change", e => { S.hideEx = e.target.checked; rebuild(); });
+on("shownull","change", e => { S.showNull = e.target.checked; rebuild(); });
+on("px",  "input", e => { S.px = +e.target.value; labels(); restyle(); });
+on("zscale","change", e => { S.zscale = e.target.checked; restyle(); });
+</script>
+</body>
+</html>
